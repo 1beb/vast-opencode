@@ -1,6 +1,6 @@
 # vast-opencode
 
-A single command that rents a GPU on [Vast.ai](https://vast.ai), serves [Qwen3.5 Coder 35B-A3B](https://huggingface.co/Qwen/Qwen3.5-Coder-35B-A3B) via [vLLM](https://docs.vllm.ai), launches [OpenCode](https://opencode.ai), and tears everything down when you quit. Billing stops automatically.
+A single command that rents a GPU on [Vast.ai](https://vast.ai), serves [Qwen3.5 35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B) via [vLLM](https://docs.vllm.ai), launches [OpenCode](https://opencode.ai), and tears everything down when you quit. Billing stops automatically.
 
 ## How It Works
 
@@ -17,9 +17,9 @@ Checks for and installs any missing dependencies:
 
 Loads credentials from `~/.vast-opencode.env` if it exists, or prompts for:
 - **Vast.ai API key** (from https://cloud.vast.ai/cli/)
-- **HuggingFace token** (from https://huggingface.co/settings/tokens)
+- **HuggingFace token** (optional — the default model is public/Apache 2.0)
 
-On first run, offers to save both keys to `~/.vast-opencode.env` (chmod 600) so you're never prompted again.
+On first run, offers to save keys to `~/.vast-opencode.env` (chmod 600) so you're never prompted again.
 
 ### 2. GPU Selection
 
@@ -62,9 +62,9 @@ When enabled, the model reasons in `<think>...</think>` blocks before answering.
 ### 4. Provision
 
 Rents the selected GPU and boots a vLLM container with:
-- Qwen3.5 Coder 35B-A3B at FP8 quantization (~35GB weights)
+- Qwen3.5 35B-A3B at FP8 quantization (~27GB weights)
 - OpenAI-compatible API on port 8000
-- Your HuggingFace token for model download
+- HuggingFace token if needed (default model is public)
 
 ### 5. Wait for Ready
 
@@ -79,7 +79,7 @@ OpenCode launches connected to the model through the SSH tunnel. You get a full 
 ```
 ═══════════════════════════════════════════════════════
   GPU session active — 1x RTX PRO 6000 S (95GB) @ $0.73/hr
-  Model: Qwen/Qwen3.5-Coder-35B-A3B
+  Model: Qwen/Qwen3.5-35B-A3B
   Context: 262144 tokens
   Thinking: ON
   Quit OpenCode to automatically destroy the instance
@@ -136,17 +136,17 @@ vast-opencode -p 9000                  # use different local port
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `VAST_MODEL` | Model to serve | `Qwen/Qwen3.5-Coder-35B-A3B` |
+| `VAST_MODEL` | Model to serve | `Qwen/Qwen3.5-35B-A3B` |
 | `VAST_CTX_LEN` | Context length (overrides auto) | auto by VRAM |
 | `VAST_MIN_VRAM` | Minimum GPU VRAM in GB | `60` |
 | `VAST_MIN_DISK` | Minimum disk space in GB | `80` |
 | `VAST_MIN_RELIABILITY` | Minimum host reliability | `0.95` |
-| `VAST_MIN_INET` | Minimum download bandwidth Mbps | `200` |
+| `VAST_MIN_INET` | Minimum download bandwidth Mbps | `1000` |
 | `VAST_THINKING` | `on` or `off` | prompted |
-| `VAST_VLLM_IMAGE` | Docker image | `vllm/vllm-openai:latest` |
+| `VAST_VLLM_TEMPLATE` | Vast.ai template hash | vLLM latest |
 | `VAST_READY_TIMEOUT` | Seconds to wait for model | `900` |
 | `VAST_LOCAL_PORT` | Local tunnel port | `8000` |
-| `HF_TOKEN` | HuggingFace token | prompted / `.env` |
+| `HF_TOKEN` | HuggingFace token (optional) | none |
 
 ## Privacy
 
@@ -161,7 +161,7 @@ vast-opencode -p 9000                  # use different local port
 - Linux or macOS
 - `bash`, `ssh`, `curl`
 - A [Vast.ai](https://vast.ai) account with credit
-- A [HuggingFace](https://huggingface.co) token with access to Qwen models
+- A [HuggingFace](https://huggingface.co) token (only if using a gated model — the default model is public)
 
 ## License
 

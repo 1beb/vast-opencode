@@ -2,19 +2,19 @@
 set -euo pipefail
 
 # vast-opencode — Single-command GPU coding session
-# Finds cheapest suitable GPU on Vast.ai, serves Qwen3.5 Coder via vLLM,
+# Finds cheapest suitable GPU on Vast.ai, serves Qwen3.5 via vLLM,
 # tunnels to localhost, launches OpenCode, and tears everything down on exit.
 
 # ─── Defaults (override via env vars) ────────────────────────────────────────
 
-MODEL="${VAST_MODEL:-Qwen/Qwen3.5-Coder-35B-A3B}"
+MODEL="${VAST_MODEL:-Qwen/Qwen3.5-35B-A3B}"
 CTX_LEN="${VAST_CTX_LEN:-}"  # auto-selected based on GPU VRAM if not set
 MIN_VRAM="${VAST_MIN_VRAM:-60}"
 MIN_DISK="${VAST_MIN_DISK:-80}"
 MIN_RELIABILITY="${VAST_MIN_RELIABILITY:-0.95}"
-MIN_INET="${VAST_MIN_INET:-200}"
+MIN_INET="${VAST_MIN_INET:-1000}"
 THINKING="${VAST_THINKING:-}"  # empty = prompt user; "on" or "off"
-VLLM_IMAGE="${VAST_VLLM_IMAGE:-vllm/vllm-openai:latest}"
+VLLM_TEMPLATE="${VAST_VLLM_TEMPLATE:-57903c593eb94ea8ed4a3f0d2e51d5e3}"  # "vLLM latest" on Vast.ai
 READY_TIMEOUT="${VAST_READY_TIMEOUT:-900}"  # 15 minutes
 LOCAL_PORT="${VAST_LOCAL_PORT:-8000}"
 
@@ -42,7 +42,15 @@ err()   { echo -e "${RED}>>>${NC} $*" >&2; }
 
 # ─── Cleanup / Teardown ─────────────────────────────────────────────────────
 
+CLEANUP_DONE=false
+
 cleanup() {
+    # Prevent running twice (Ctrl+C sends INT, then EXIT fires)
+    if [[ "$CLEANUP_DONE" == true ]]; then
+        return
+    fi
+    CLEANUP_DONE=true
+
     local exit_code=$?
     echo ""
     info "Shutting down..."
@@ -57,12 +65,8 @@ cleanup() {
     # Destroy Vast.ai instance
     if [[ -n "$INSTANCE_ID" ]]; then
         info "Destroying Vast.ai instance ${INSTANCE_ID}..."
-        if vastai destroy instance "$INSTANCE_ID" 2>/dev/null; then
-            ok "Instance ${INSTANCE_ID} destroyed — billing stopped"
-        else
-            err "Failed to destroy instance ${INSTANCE_ID}!"
-            err "Run manually: vastai destroy instance ${INSTANCE_ID}"
-        fi
+        vastai destroy instance "$INSTANCE_ID" 2>&1 || true
+        ok "Instance ${INSTANCE_ID} destroyed — billing stopped"
     fi
 
     # Clean up temp config
@@ -79,7 +83,7 @@ cleanup() {
         info "Session duration: ${mins}m ${secs}s"
         if [[ -n "$OFFER_PRICE" ]]; then
             local cost
-            cost=$(echo "scale=4; $OFFER_PRICE * $elapsed / 3600" | bc 2>/dev/null || echo "??")
+            cost=$(printf '%.4f' "$(echo "scale=4; $OFFER_PRICE * $elapsed / 3600" | bc)" 2>/dev/null || echo "??")
             info "Estimated cost: ~\$${cost}"
         fi
     fi
@@ -99,7 +103,7 @@ Spin up a GPU on Vast.ai, serve a model via vLLM, and launch OpenCode.
 Everything is torn down automatically when you quit.
 
 Options:
-  -m, --model MODEL      Model to serve (default: Qwen/Qwen3.5-Coder-35B-A3B)
+  -m, --model MODEL      Model to serve (default: Qwen/Qwen3.5-35B-A3B)
   -c, --ctx-len N        Max context length (auto: 128K@48GB, 256K@80GB+)
   -v, --vram N           Minimum GPU VRAM in GB (default: 60)
   -p, --port N           Local port for tunnel (default: 8000)
@@ -114,12 +118,12 @@ Environment variables:
   VAST_MIN_VRAM          Same as --vram
   VAST_MIN_DISK          Min disk space in GB (default: 80)
   VAST_MIN_RELIABILITY   Min reliability score (default: 0.95)
-  VAST_MIN_INET          Min download bandwidth (default: 200)
-  VAST_VLLM_IMAGE        Docker image (default: vllm/vllm-openai:latest)
+  VAST_MIN_INET          Min download bandwidth Mbps (default: 1000)
+  VAST_VLLM_TEMPLATE     Vast.ai template hash (default: vLLM latest)
   VAST_READY_TIMEOUT     Seconds to wait for model ready (default: 900)
   VAST_LOCAL_PORT        Same as --port
   VAST_THINKING          "on" or "off" — same as --thinking/--no-thinking
-  HF_TOKEN               HuggingFace token (prompted if not set)
+  HF_TOKEN               HuggingFace token (optional, for gated models)
 EOF
     exit 0
 }
@@ -218,17 +222,15 @@ if [[ ! -f "$HOME/.vast_api_key" ]]; then
     fi
 fi
 
-# HuggingFace token
+# HuggingFace token (optional — needed only for gated models)
 if [[ -z "${HF_TOKEN:-}" ]]; then
-    warn "HF_TOKEN not set (needed to pull model weights)."
-    echo -n "Enter your HuggingFace token (from https://huggingface.co/settings/tokens): "
+    info "HF_TOKEN not set. The default model (Qwen3.5) is public and doesn't need one."
+    echo -n "Enter a HuggingFace token (press Enter to skip): "
     read -r HF_TOKEN
-    if [[ -z "$HF_TOKEN" ]]; then
-        err "HuggingFace token required for model access."
-        exit 1
+    if [[ -n "$HF_TOKEN" ]]; then
+        export HF_TOKEN
+        SAVE_KEYS=true
     fi
-    export HF_TOKEN
-    SAVE_KEYS=true
 fi
 
 # Save keys to .env for next time if any were entered interactively
@@ -297,7 +299,7 @@ for i in $(seq 0 $(( SHOW_COUNT - 1 ))); do
     i_num=$(echo "$ITEM" | jq -r '.num_gpus')
     i_ram_raw=$(echo "$ITEM" | jq -r '.gpu_ram | floor')
     i_ram=$(vram_to_gb "$i_ram_raw")
-    i_price=$(echo "$ITEM" | jq -r '.dph_total')
+    i_price=$(echo "$ITEM" | jq -r '.dph_total | . * 1000 | round / 1000')
     i_inet=$(echo "$ITEM" | jq -r '.inet_down | floor')
     i_rel=$(echo "$ITEM" | jq -r '(.reliability * 100) | floor | tostring + "%"')
     i_loc=$(echo "$ITEM" | jq -r '.geolocation // "?"')
@@ -388,9 +390,9 @@ fi
 
 # ─── Phase 3: Provision Instance ─────────────────────────────────────────────
 
-info "Provisioning instance..."
+info "Provisioning instance (using vLLM template)..."
 
-# Build vLLM args
+# Build vLLM args for onstart
 VLLM_EXTRA_ARGS="--reasoning-parser qwen3"
 if [[ "$THINKING_ENABLED" == false ]]; then
     VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --default-chat-template-kwargs '{\"enable_thinking\": false}'"
@@ -401,22 +403,28 @@ ONSTART_CMD=$(cat <<EOSCRIPT
 set -e
 env | grep _ >> /etc/environment
 echo "Starting vLLM server..."
-python -m vllm.entrypoints.openai.api_server \
+python3 -m vllm.entrypoints.openai.api_server \
     --model ${MODEL} \
     --port 8000 \
     --trust-remote-code \
     --max-model-len ${CTX_LEN} \
     --quantization fp8 \
     ${VLLM_EXTRA_ARGS} \
-    --host 0.0.0.0 &
+    --host 0.0.0.0 2>&1 | tee /var/log/vllm.log &
 echo "vLLM server started in background"
 EOSCRIPT
 )
 
+# Build env flags — only include HF token if provided
+ENV_FLAGS="-p 8000:8000 -p 22:22"
+if [[ -n "${HF_TOKEN:-}" ]]; then
+    ENV_FLAGS="-e HF_TOKEN=${HF_TOKEN} -e HUGGING_FACE_HUB_TOKEN=${HF_TOKEN} ${ENV_FLAGS}"
+fi
+
 CREATE_OUTPUT=$(vastai create instance "$OFFER_ID" \
-    --image "$VLLM_IMAGE" \
+    --template_hash "$VLLM_TEMPLATE" \
     --disk "$MIN_DISK" \
-    --env "-e HF_TOKEN=${HF_TOKEN} -e HUGGING_FACE_HUB_TOKEN=${HF_TOKEN} -p 8000:8000 -p 22:22" \
+    --env "$ENV_FLAGS" \
     --onstart-cmd "$ONSTART_CMD" \
     --ssh \
     --direct \
@@ -456,8 +464,16 @@ while true; do
     ACTUAL_STATUS=$(echo "$STATUS_JSON" | jq -r '.actual_status // "unknown"')
 
     if [[ "$ACTUAL_STATUS" == "running" ]]; then
-        SSH_HOST=$(echo "$STATUS_JSON" | jq -r '.ssh_host // empty')
-        SSH_PORT=$(echo "$STATUS_JSON" | jq -r '.ssh_port // empty')
+        # With --direct, use public IP + direct port mapping (not the ssh proxy)
+        SSH_HOST=$(echo "$STATUS_JSON" | jq -r '.public_ipaddr // empty')
+        SSH_PORT=$(echo "$STATUS_JSON" | jq -r '.ports["22/tcp"][0].HostPort // empty')
+        VLLM_DIRECT_PORT=$(echo "$STATUS_JSON" | jq -r '.ports["8000/tcp"][0].HostPort // empty')
+
+        # Fallback to ssh proxy if direct ports not available
+        if [[ -z "$SSH_HOST" || -z "$SSH_PORT" ]]; then
+            SSH_HOST=$(echo "$STATUS_JSON" | jq -r '.ssh_host // empty')
+            SSH_PORT=$(echo "$STATUS_JSON" | jq -r '.ssh_port // empty')
+        fi
 
         if [[ -n "$SSH_HOST" && -n "$SSH_PORT" ]]; then
             ok "Instance running at ${SSH_HOST}:${SSH_PORT}"
@@ -472,31 +488,60 @@ done
 # Set up SSH tunnel (instance may need time before SSH is accepting connections)
 info "Opening SSH tunnel (localhost:${LOCAL_PORT} -> instance:8000)..."
 
-SSH_TUNNEL_PID=""
-SSH_RETRIES=12  # up to ~2 minutes of retrying
+# Common SSH options: accept new host keys automatically, no interactive prompts
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR)
+
+# Wait until SSH port is actually accepting connections
+SSH_RETRIES=18  # up to ~3 minutes of retrying
+SSH_CONNECTED=false
 
 for attempt in $(seq 1 $SSH_RETRIES); do
-    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ServerAliveInterval=30 \
-        -f -N -L "${LOCAL_PORT}:localhost:8000" \
-        -p "$SSH_PORT" "root@${SSH_HOST}" 2>/dev/null; then
-
-        SSH_TUNNEL_PID=$(pgrep -f "ssh.*-L ${LOCAL_PORT}:localhost:8000.*${SSH_HOST}" | head -1)
-        if [[ -n "$SSH_TUNNEL_PID" ]]; then
-            break
-        fi
+    if [[ $(date +%s) -gt $DEADLINE ]]; then
+        err "Timed out waiting for SSH"
+        exit 1
     fi
 
-    if [[ $(date +%s) -gt $DEADLINE ]]; then
-        err "Timed out establishing SSH tunnel"
-        exit 1
+    # Test SSH connectivity (accept-new auto-accepts host key on first connect)
+    SSH_ERR=$(ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "root@${SSH_HOST}" echo ok 2>&1) && {
+        SSH_CONNECTED=true
+        break
+    }
+
+    # Show what's happening on first and every 3rd attempt
+    if (( attempt == 1 )); then
+        warn "SSH not ready yet: ${SSH_ERR##*$'\n'}"
+        info "Retrying (attempt ${attempt}/${SSH_RETRIES})..."
+    elif (( attempt % 3 == 0 )); then
+        info "Still waiting for SSH (attempt ${attempt}/${SSH_RETRIES})..."
     fi
 
     echo -n "."
     sleep 10
 done
 
+if [[ "$SSH_CONNECTED" != true ]]; then
+    err "Could not connect to instance via SSH after ${SSH_RETRIES} attempts"
+    err "Last error: ${SSH_ERR:-unknown}"
+    err "Check that your SSH key is added at https://cloud.vast.ai/account/"
+    exit 1
+fi
+
+ok "SSH connection verified"
+
+# Now establish the tunnel
+ssh "${SSH_OPTS[@]}" -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
+    -f -N -L "${LOCAL_PORT}:localhost:8000" \
+    -p "$SSH_PORT" "root@${SSH_HOST}" 2>&1 || {
+    err "Failed to open SSH tunnel"
+    exit 1
+}
+
+# Find the tunnel process
+sleep 1
+SSH_TUNNEL_PID=$(pgrep -f "ssh.*-N.*-L ${LOCAL_PORT}:localhost:8000" | head -1)
+
 if [[ -z "$SSH_TUNNEL_PID" ]]; then
-    err "Failed to establish SSH tunnel after ${SSH_RETRIES} attempts"
+    err "SSH tunnel process not found"
     exit 1
 fi
 
@@ -504,11 +549,16 @@ ok "SSH tunnel established (PID: ${SSH_TUNNEL_PID})"
 
 # Wait for vLLM to be ready
 info "Waiting for vLLM to load model (this can take several minutes)..."
+info "Checking instance logs periodically..."
 
+VLLM_POLL=0
 while true; do
     if [[ $(date +%s) -gt $DEADLINE ]]; then
-        err "Timed out waiting for vLLM. Fetching logs..."
-        vastai logs "$INSTANCE_ID" --tail 50 2>/dev/null || true
+        err "Timed out waiting for vLLM."
+        warn "Fetching instance logs:"
+        vastai logs "$INSTANCE_ID" --tail 80 2>/dev/null || true
+        echo ""
+        warn "You can also check via: ssh -p ${SSH_PORT} root@${SSH_HOST} cat /var/log/vllm.log"
         exit 1
     fi
 
@@ -516,6 +566,19 @@ while true; do
         echo ""
         ok "vLLM is ready! Model loaded."
         break
+    fi
+
+    VLLM_POLL=$(( VLLM_POLL + 1 ))
+
+    # Every 30 seconds (~3 polls), show latest log line from the instance
+    if (( VLLM_POLL % 3 == 0 )); then
+        LAST_LOG=$(ssh "${SSH_OPTS[@]}" \
+            -p "$SSH_PORT" "root@${SSH_HOST}" \
+            "tail -1 /var/log/vllm.log 2>/dev/null || vastai logs $INSTANCE_ID --tail 1 2>/dev/null" 2>/dev/null || true)
+        if [[ -n "$LAST_LOG" ]]; then
+            echo ""
+            info "vLLM: ${LAST_LOG}"
+        fi
     fi
 
     echo -n "."
@@ -544,7 +607,7 @@ cat > "$OPENCODE_CONFIG_TMP" <<EOCONF
       },
       "models": {
         "${MODEL_ID}": {
-          "name": "Qwen3.5 Coder A3B (Vast.ai)",
+          "name": "Qwen3.5 A3B (Vast.ai)",
           "limit": { "context": ${CTX_LEN}, "output": 32000 }
         }
       }
