@@ -100,14 +100,24 @@ When you quit OpenCode (or press Ctrl+C at any point):
 
 ## OpenCode Configuration
 
-OpenCode discovers the vLLM server automatically via `LOCAL_ENDPOINT`, but it doesn't read `max_model_len` from vLLM's `/v1/models` response — it falls back to a 4096-token context window, which causes premature conversation compaction. Fix this by adding the model's true context limit to `~/.opencode.json`:
+The script automatically generates an OpenCode config at launch via `OPENCODE_CONFIG_CONTENT`, so the model, context length, and endpoint are set dynamically each session.
+
+If you want a persistent config for manual use (e.g., running `opencode` while a tunnel is already up), add `~/.opencode.json`:
 
 ```json
 {
+  "$schema": "https://opencode.ai/config.json",
+  "model": "vllm/Qwen/Qwen3.5-35B-A3B",
   "provider": {
-    "local": {
+    "vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "vLLM (Vast.ai)",
+      "options": {
+        "baseURL": "http://localhost:8000/v1"
+      },
       "models": {
         "Qwen/Qwen3.5-35B-A3B": {
+          "name": "Qwen3.5 35B-A3B",
           "limit": { "context": 262144, "output": 32000 }
         }
       }
@@ -116,7 +126,7 @@ OpenCode discovers the vLLM server automatically via `LOCAL_ENDPOINT`, but it do
 }
 ```
 
-If you use a different model, set `context` to match the `max_model_len` your vLLM instance was started with.
+If you use a different model, update the model ID and set `context` to match the `max_model_len` your vLLM instance was started with.
 
 ## Installation
 
