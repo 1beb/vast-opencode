@@ -91,13 +91,32 @@ OpenCode launches connected to the model through the SSH tunnel. You get a full 
 When you quit OpenCode (or press Ctrl+C at any point):
 - SSH tunnel is closed
 - Vast.ai instance is **destroyed** (not just stopped — billing ends immediately)
-- Temp config is cleaned up
 - Session summary is printed:
 
 ```
 >>> Session duration: 47m 12s
 >>> Estimated cost: ~$0.4564
 ```
+
+## OpenCode Configuration
+
+OpenCode discovers the vLLM server automatically via `LOCAL_ENDPOINT`, but it doesn't read `max_model_len` from vLLM's `/v1/models` response — it falls back to a 4096-token context window, which causes premature conversation compaction. Fix this by adding the model's true context limit to `~/.opencode.json`:
+
+```json
+{
+  "provider": {
+    "local": {
+      "models": {
+        "Qwen/Qwen3.5-35B-A3B": {
+          "limit": { "context": 262144, "output": 32000 }
+        }
+      }
+    }
+  }
+}
+```
+
+If you use a different model, set `context` to match the `max_model_len` your vLLM instance was started with.
 
 ## Installation
 
