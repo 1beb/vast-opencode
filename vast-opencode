@@ -22,7 +22,6 @@ LOCAL_PORT="${VAST_LOCAL_PORT:-8000}"
 
 INSTANCE_ID=""
 SSH_TUNNEL_PID=""
-OPENCODE_CONFIG_TMP=""
 START_TIME=""
 OFFER_PRICE=""
 
@@ -67,11 +66,6 @@ cleanup() {
         info "Destroying Vast.ai instance ${INSTANCE_ID}..."
         vastai destroy instance "$INSTANCE_ID" 2>&1 || true
         ok "Instance ${INSTANCE_ID} destroyed — billing stopped"
-    fi
-
-    # Clean up temp config
-    if [[ -n "$OPENCODE_CONFIG_TMP" && -f "$OPENCODE_CONFIG_TMP" ]]; then
-        rm -f "$OPENCODE_CONFIG_TMP"
     fi
 
     # Session summary
@@ -250,6 +244,22 @@ fi
 
 ok "All prerequisites satisfied"
 
+# ─── Model Selection ─────────────────────────────────────────────────────────
+
+if [[ "$AUTO_YES" == false ]]; then
+    echo ""
+    echo -n "Model [${MODEL}]: "
+    read -r model_input
+    if [[ -n "$model_input" ]]; then
+        MODEL="$model_input"
+    fi
+fi
+ok "Model: ${MODEL}"
+
+# Detect model family for feature gating (thinking mode, reasoning parser)
+IS_QWEN3=false
+[[ "$MODEL" =~ [Qq]wen3 ]] && IS_QWEN3=true
+
 # ─── Helper: normalize VRAM to GB ────────────────────────────────────────────
 # Vast.ai raw JSON returns gpu_ram in MB; convert to GB for display/logic
 vram_to_gb() {
@@ -355,36 +365,40 @@ if [[ -z "$CTX_LEN" ]]; then
     info "Auto-selected context length: ${CTX_LEN} tokens (for ${VRAM}GB VRAM)"
 fi
 
-# ─── Thinking Mode ───────────────────────────────────────────────────────────
+# ─── Thinking Mode (Qwen3 only) ──────────────────────────────────────────────
 
-if [[ -z "$THINKING" ]]; then
-    if [[ "$AUTO_YES" == true ]]; then
-        THINKING="on"
-    else
-        echo ""
-        echo -e "${BOLD}Thinking mode:${NC}"
-        echo -e "  The model can \"think\" before responding — reasoning step-by-step"
-        echo -e "  internally before giving its answer. This improves quality on"
-        echo -e "  complex tasks but uses more tokens and is slower."
-        echo ""
-        echo -e "  ${GREEN}on${NC}   Better quality, uses more context, slower responses"
-        echo -e "  ${YELLOW}off${NC}  Faster responses, uses less context, still capable"
-        echo ""
-        echo -n "Enable thinking mode? [Y/n] "
-        read -r think_choice
-        if [[ "$think_choice" =~ ^[Nn] ]]; then
-            THINKING="off"
-        else
+if [[ "$IS_QWEN3" == true ]]; then
+    if [[ -z "$THINKING" ]]; then
+        if [[ "$AUTO_YES" == true ]]; then
             THINKING="on"
+        else
+            echo ""
+            echo -e "${BOLD}Thinking mode:${NC}"
+            echo -e "  The model can \"think\" before responding — reasoning step-by-step"
+            echo -e "  internally before giving its answer. This improves quality on"
+            echo -e "  complex tasks but uses more tokens and is slower."
+            echo ""
+            echo -e "  ${GREEN}on${NC}   Better quality, uses more context, slower responses"
+            echo -e "  ${YELLOW}off${NC}  Faster responses, uses less context, still capable"
+            echo ""
+            echo -n "Enable thinking mode? [Y/n] "
+            read -r think_choice
+            if [[ "$think_choice" =~ ^[Nn] ]]; then
+                THINKING="off"
+            else
+                THINKING="on"
+            fi
         fi
     fi
-fi
 
-if [[ "$THINKING" == "on" ]]; then
-    ok "Thinking mode: ON"
-    THINKING_ENABLED=true
+    if [[ "$THINKING" == "on" ]]; then
+        ok "Thinking mode: ON"
+        THINKING_ENABLED=true
+    else
+        ok "Thinking mode: OFF"
+        THINKING_ENABLED=false
+    fi
 else
-    ok "Thinking mode: OFF"
     THINKING_ENABLED=false
 fi
 
@@ -393,9 +407,12 @@ fi
 info "Provisioning instance (image: ${VLLM_IMAGE})..."
 
 # Build vLLM args for onstart
-VLLM_EXTRA_ARGS="--reasoning-parser qwen3"
-if [[ "$THINKING_ENABLED" == false ]]; then
-    VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --default-chat-template-kwargs '{\"enable_thinking\": false}'"
+VLLM_EXTRA_ARGS="--enable-auto-tool-choice --tool-call-parser hermes"
+if [[ "$IS_QWEN3" == true ]]; then
+    VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --reasoning-parser qwen3"
+    if [[ "$THINKING_ENABLED" == false ]]; then
+        VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS} --default-chat-template-kwargs '{\"enable_thinking\": false}'"
+    fi
 fi
 
 ONSTART_CMD=$(cat <<EOSCRIPT
@@ -594,30 +611,6 @@ if [[ -z "$MODEL_ID" ]]; then
     MODEL_ID="$MODEL"
 fi
 
-OPENCODE_CONFIG_TMP=$(mktemp /tmp/opencode-vast-XXXXXX.json)
-cat > "$OPENCODE_CONFIG_TMP" <<EOCONF
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "vast": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Vast.ai vLLM",
-      "options": {
-        "baseURL": "http://localhost:${LOCAL_PORT}/v1"
-      },
-      "models": {
-        "${MODEL_ID}": {
-          "name": "Qwen3.5 A3B (Vast.ai)",
-          "limit": { "context": ${CTX_LEN}, "output": 32000 }
-        }
-      }
-    }
-  },
-  "model": "vast/${MODEL_ID}",
-  "small_model": "vast/${MODEL_ID}"
-}
-EOCONF
-
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 OFFER_PRICE_FMT=$(printf '%.2f' "$OFFER_PRICE" 2>/dev/null || echo "$OFFER_PRICE")
@@ -629,9 +622,9 @@ echo -e "${BOLD}  Quit OpenCode to automatically destroy the instance${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo ""
 
-# Launch opencode with the temp config
-OPENCODE_CONFIG="$OPENCODE_CONFIG_TMP" \
-OPENAI_API_KEY="sk-local" \
+# LOCAL_ENDPOINT tells opencode to auto-discover models from the local vLLM server
+# and set them as the default for all agents (coder, summarizer, task, title)
+LOCAL_ENDPOINT="http://localhost:${LOCAL_PORT}/v1" \
     opencode || true
 
 # When opencode exits, the trap fires and cleans everything up
