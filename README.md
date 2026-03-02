@@ -143,7 +143,7 @@ vast-opencode -p 9000                  # use different local port
 | `VAST_MIN_RELIABILITY` | Minimum host reliability | `0.95` |
 | `VAST_MIN_INET` | Minimum download bandwidth Mbps | `1000` |
 | `VAST_THINKING` | `on` or `off` | prompted |
-| `VAST_VLLM_TEMPLATE` | Vast.ai template hash | vLLM latest |
+| `VAST_VLLM_IMAGE` | Docker image | `vllm/vllm-openai:nightly` |
 | `VAST_READY_TIMEOUT` | Seconds to wait for model | `900` |
 | `VAST_LOCAL_PORT` | Local tunnel port | `8000` |
 | `HF_TOKEN` | HuggingFace token (optional) | none |

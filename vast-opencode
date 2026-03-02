@@ -14,7 +14,7 @@ MIN_DISK="${VAST_MIN_DISK:-80}"
 MIN_RELIABILITY="${VAST_MIN_RELIABILITY:-0.95}"
 MIN_INET="${VAST_MIN_INET:-1000}"
 THINKING="${VAST_THINKING:-}"  # empty = prompt user; "on" or "off"
-VLLM_TEMPLATE="${VAST_VLLM_TEMPLATE:-57903c593eb94ea8ed4a3f0d2e51d5e3}"  # "vLLM latest" on Vast.ai
+VLLM_IMAGE="${VAST_VLLM_IMAGE:-vllm/vllm-openai:nightly}"  # nightly required for Qwen3.5 until vLLM 0.17.0
 READY_TIMEOUT="${VAST_READY_TIMEOUT:-900}"  # 15 minutes
 LOCAL_PORT="${VAST_LOCAL_PORT:-8000}"
 
@@ -119,7 +119,7 @@ Environment variables:
   VAST_MIN_DISK          Min disk space in GB (default: 80)
   VAST_MIN_RELIABILITY   Min reliability score (default: 0.95)
   VAST_MIN_INET          Min download bandwidth Mbps (default: 1000)
-  VAST_VLLM_TEMPLATE     Vast.ai template hash (default: vLLM latest)
+  VAST_VLLM_IMAGE        Docker image (default: vllm/vllm-openai:nightly)
   VAST_READY_TIMEOUT     Seconds to wait for model ready (default: 900)
   VAST_LOCAL_PORT        Same as --port
   VAST_THINKING          "on" or "off" — same as --thinking/--no-thinking
@@ -390,7 +390,7 @@ fi
 
 # ─── Phase 3: Provision Instance ─────────────────────────────────────────────
 
-info "Provisioning instance (using vLLM template)..."
+info "Provisioning instance (image: ${VLLM_IMAGE})..."
 
 # Build vLLM args for onstart
 VLLM_EXTRA_ARGS="--reasoning-parser qwen3"
@@ -422,7 +422,7 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
 fi
 
 CREATE_OUTPUT=$(vastai create instance "$OFFER_ID" \
-    --template_hash "$VLLM_TEMPLATE" \
+    --image "$VLLM_IMAGE" \
     --disk "$MIN_DISK" \
     --env "$ENV_FLAGS" \
     --onstart-cmd "$ONSTART_CMD" \
